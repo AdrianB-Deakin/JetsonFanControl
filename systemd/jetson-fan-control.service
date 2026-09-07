@@ -1,0 +1,23 @@
+[Unit]
+Description=Jetson Xavier NX fan temperature controller (DSBOX-NX2 GPIO fan)
+After=jtop.service network-online.target
+Requires=jtop.service
+
+[Service]
+Type=simple
+# Sysfs GPIO export/direction/value are root-only on stock L4T.
+User=root
+WorkingDirectory=/opt/jetson-fan-control
+ExecStart=/opt/jetson-fan-control/.venv/bin/jetson-fan-control
+Restart=on-failure
+RestartSec=5
+
+# Uncomment / adjust to override defaults from jetson_fan_control/config.py
+# without editing code:
+# Environment=FAN_CONTROL_ON_TEMP=55.0
+# Environment=FAN_CONTROL_OFF_TEMP=48.0
+# Environment=FAN_CONTROL_POLL_INTERVAL_SEC=2.0
+# Environment=FAN_CONTROL_TEMP_SENSOR=max
+
+[Install]
+WantedBy=multi-user.target

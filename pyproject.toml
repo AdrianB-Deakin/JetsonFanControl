@@ -1,0 +1,30 @@
+[project]
+name = "jetson-fan-control"
+version = "0.1.0"
+description = "Temperature-based on/off control of a GPIO-switched fan on a Jetson Xavier NX (DSBOX-NX2), using jetson-stats for temperature readings."
+authors = [{ name = "Adrian Bingham", email = "adrian.bingham222@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.8,<3.9"
+
+dependencies = [
+    # Must match the version of the jtop.service already running on the
+    # target device (jtop refuses to talk to a mismatched service version).
+    # Check with `jtop --version` on the Jetson and update this pin to match.
+    "jetson-stats (==4.3.2)",
+]
+
+[tool.poetry]
+packages = [{ include = "jetson_fan_control" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+
+[tool.poetry.scripts]
+jetson-fan-control = "jetson_fan_control.__main__:main"
+
+[build-system]
+requires = ["poetry-core>=2.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
