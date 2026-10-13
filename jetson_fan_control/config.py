@@ -2,11 +2,12 @@
 Configuration for the fan controller.
 
 Every value can be overridden with an environment variable of the same name
-(see the FAN_CONTROL_* prefix below) so the systemd unit can tune behaviour
-without editing code, e.g.:
+(see the FAN_CONTROL_* prefix below) so a deployment can tune behaviour
+without editing code. The systemd unit reads them from
+/etc/default/jetson-fan-control, which install.sh writes, e.g.:
 
-    Environment=FAN_CONTROL_ON_TEMP=60.0
-    Environment=FAN_CONTROL_OFF_TEMP=50.0
+    FAN_CONTROL_ON_TEMP=60.0
+    FAN_CONTROL_OFF_TEMP=50.0
 
 Hardware background (Forecr DSBOX-NX2 / Xavier NX, L4T R35.6):
 The 24V fan is switched by DIGITAL_OUT1 (I/O connector pin 11), a low-side

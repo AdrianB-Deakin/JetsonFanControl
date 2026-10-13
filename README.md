@@ -1,7 +1,7 @@
 # Jetson Fan Control
 
 Temperature-based on/off control for the 24V fan wired to the DSBOX-NX2's
-`DIGITAL_OUT1` output (Jetson Xavier NX, L4T R35.6.3). Reads CPU/GPU/thermal
+`DIGITAL_OUT1` output (Jetson Xavier NX, L4T R35.6). Reads CPU/GPU/thermal
 zone temperatures via [jetson-stats](https://github.com/rbonghi/jetson_stats)
 (`jtop`) and switches the fan on above a threshold, off below a lower
 threshold (hysteresis, to avoid rapid on/off chatter).
@@ -9,10 +9,103 @@ threshold (hysteresis, to avoid rapid on/off chatter).
 This is on/off switching of a digital output, not PWM speed control — see
 [Hardware background](#hardware-background) below for why.
 
-## Requirements
+## Install
+
+```bash
+sudo ./install.sh
+```
+
+Run it as your normal user with `sudo`, not from a root shell: the
+development tools in step 6 are installed for the user who invoked `sudo`.
+
+The script:
+
+1. checks `jtop.service` is running (installing jetson-stats if it is
+   missing) and reads its version;
+2. copies the code to `/opt/jetson-fan-control` and builds a virtualenv
+   there with the matching jetson-stats version (plain `venv` + `pip`, so
+   the service does not depend on pyenv or Poetry);
+3. identifies the fan driver for this board, and offers to pulse the fan
+   (off for 4 seconds, then on) so you can confirm it is the right one — if
+   you answer no, it tries the other driver;
+4. asks for the on/off temperatures;
+5. installs and starts `jetson-fan-control.service`, enabled on boot and
+   restarted automatically if it ever exits;
+6. sets up the development tools for the user who ran `sudo`: pyenv, the
+   Python version in `.python-version`, Poetry, and this project's Poetry
+   environment (the same result as [Development setup](#development-setup)
+   below, then runs the tests). This comes last and does not affect the
+   service if it fails. On a machine without pyenv it builds Python from
+   source twice (once for the project, once to run Poetry), which can take
+   20-40 minutes.
+
+It is safe to re-run, e.g. after pulling new code: it keeps the current
+settings as the defaults for its prompts. Without a terminal it takes every
+default and skips the fan test.
+
+### Managing the service
+
+```bash
+systemctl status jetson-fan-control.service     # is it running?
+journalctl -u jetson-fan-control.service -f     # live log (every fan on/off)
+sudo systemctl restart jetson-fan-control.service
+sudo systemctl stop jetson-fan-control.service  # leaves the fan ON
+```
+
+The driver and temperatures chosen during the install are saved to
+`/etc/default/jetson-fan-control`. To change them, edit that file (any
+variable from [Configuration](#configuration) can go there) and restart the
+service, or re-run the script.
+
+How it behaves:
+
+- It starts at boot together with `jtop.service`, which it needs for
+  temperature readings. Stopping or restarting `jtop.service` stops or
+  restarts the fan controller too.
+- If it exits for any reason, systemd restarts it after 5 seconds.
+- On a clean stop it forces the fan **on** (see
+  `FAN_CONTROL_FAIL_SAFE_ON_EXIT`), so a stopped controller never leaves the
+  box without cooling.
+
+To remove it:
+
+```bash
+sudo systemctl disable --now jetson-fan-control.service
+sudo rm /etc/systemd/system/jetson-fan-control.service /etc/default/jetson-fan-control
+sudo rm -r /opt/jetson-fan-control
+sudo systemctl daemon-reload
+```
+
+## Configuration
+
+All settings have defaults in [jetson_fan_control/config.py](jetson_fan_control/config.py)
+and can be overridden with environment variables. For the service, put
+them in `/etc/default/jetson-fan-control`, one `NAME=value` per line;
+`install.sh` writes the driver and the two temperatures there.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FAN_CONTROL_ON_TEMP` | `35.0` | °C at/above which the fan turns on |
+| `FAN_CONTROL_OFF_TEMP` | `33.0` | °C at/below which the fan turns off |
+| `FAN_CONTROL_TEMP_SENSOR` | `max` | jtop sensor to use (`max`, or e.g. `CPU`, `GPU`, `thermal`) |
+| `FAN_CONTROL_POLL_INTERVAL_SEC` | `2.0` | seconds between jtop reads |
+| `FAN_CONTROL_DRIVER` | `auto` | `expander`, `gpio`, or `auto` (expander if one answers on I2C, else GPIO) — see [Hardware background](#hardware-background) |
+| `FAN_CONTROL_I2C_BUS` | `8` | expander driver: I2C bus the I/O expander is on |
+| `FAN_CONTROL_I2C_ADDRESS` | `0x38` | expander driver: I2C address of the I/O expander |
+| `FAN_CONTROL_EXPANDER_PIN` | `5` | expander driver: pin wired to DIGITAL_OUT1 |
+| `FAN_CONTROL_GPIO_NUMBER` | `487` | GPIO driver: sysfs GPIO number for DIGITAL_OUT1 |
+| `FAN_CONTROL_GPIO_LINE_NAME` | `PY.03` | GPIO driver: sysfs directory name fallback |
+| `FAN_CONTROL_FAIL_SAFE_ON_EXIT` | `1` | force fan ON on clean shutdown (safer than leaving it off) |
+
+## Development setup
+
+`install.sh` does all of this. To set it up by hand instead:
 
 - pyenv
-- Poetry
+- Poetry 2.x (older versions cannot read this project's `pyproject.toml`).
+  Poetry 2.x itself needs Python 3.10 or newer to run, and its `virtualenv`
+  must be 20.26.x: newer releases can no longer create the Python 3.8
+  environment this project uses.
 - jetson-stats installed **system-wide** (not just as a poetry dependency) —
   it ships a systemd service (`jtop.service`) that must already be running
   before this project's poetry-managed client library can talk to it:
@@ -32,7 +125,8 @@ This is on/off switching of a digital output, not PWM speed control — see
   poetry add jetson-stats==<version from jtop --version>
   ```
 
-## Setup
+  (The installed service is not affected by this pin: `install.sh` always
+  installs the version that matches the running `jtop.service`.)
 
 ```bash
 pyenv install -s 3.8.20   # matches this project's .python-version
@@ -40,51 +134,19 @@ poetry env use $(pyenv which python)
 poetry install
 ```
 
-## Running
+### Running by hand
 
-Manual run. The I2C expander driver only needs access to `/dev/i2c-8` (root,
-or a user in the `i2c` group); the sysfs GPIO driver needs root, so add
-`sudo` on boards that use it:
+Stop the service first so two controllers do not fight over the fan. The
+I2C expander driver only needs access to `/dev/i2c-8` (root, or a user in
+the `i2c` group); the sysfs GPIO driver needs root, so add `sudo` on boards
+that use it:
 
 ```bash
+sudo systemctl stop jetson-fan-control.service
 $(poetry env info --path)/bin/jetson-fan-control
 ```
 
-### As a systemd service (recommended for deployment)
-
-```bash
-sudo mkdir -p /opt/jetson-fan-control
-sudo cp -r . /opt/jetson-fan-control
-cd /opt/jetson-fan-control
-sudo poetry env use python3.8
-sudo poetry install --only main
-sudo cp systemd/jetson-fan-control.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now jetson-fan-control.service
-systemctl status jetson-fan-control.service
-journalctl -u jetson-fan-control.service -f
-```
-
-## Configuration
-
-All settings have defaults in [jetson_fan_control/config.py](jetson_fan_control/config.py)
-and can be overridden with environment variables (e.g. in the systemd unit):
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `FAN_CONTROL_ON_TEMP` | `55.0` | °C at/above which the fan turns on |
-| `FAN_CONTROL_OFF_TEMP` | `48.0` | °C at/below which the fan turns off |
-| `FAN_CONTROL_TEMP_SENSOR` | `max` | jtop sensor to use (`max`, or e.g. `CPU`, `GPU`, `thermal`) |
-| `FAN_CONTROL_POLL_INTERVAL_SEC` | `2.0` | seconds between jtop reads |
-| `FAN_CONTROL_DRIVER` | `auto` | `expander`, `gpio`, or `auto` (expander if one answers on I2C, else GPIO) — see [Hardware background](#hardware-background) |
-| `FAN_CONTROL_I2C_BUS` | `8` | expander driver: I2C bus the I/O expander is on |
-| `FAN_CONTROL_I2C_ADDRESS` | `0x38` | expander driver: I2C address of the I/O expander |
-| `FAN_CONTROL_EXPANDER_PIN` | `5` | expander driver: pin wired to DIGITAL_OUT1 |
-| `FAN_CONTROL_GPIO_NUMBER` | `487` | GPIO driver: sysfs GPIO number for DIGITAL_OUT1 |
-| `FAN_CONTROL_GPIO_LINE_NAME` | `PY.03` | GPIO driver: sysfs directory name fallback |
-| `FAN_CONTROL_FAIL_SAFE_ON_EXIT` | `1` | force fan ON on clean shutdown (safer than leaving it off) |
-
-## Testing
+### Testing
 
 ```bash
 poetry run pytest
@@ -95,9 +157,25 @@ in isolation, plus both fan drivers against a fake I2C bus and a fake sysfs
 directory (no real hardware/jtop needed). The I2C, GPIO and jtop integration
 itself can only be exercised on the actual device.
 
+## Troubleshooting
+
+- **The fan does not switch.** Re-run `sudo ./install.sh` and use its fan
+  test: the wrong driver accepts writes without error but switches nothing.
+  If neither driver moves the fan, check the wiring — the output is a
+  low-side switch, so fan + goes to +24V, fan - to `DIGITAL_OUT1`, and the
+  24V supply's ground to a `GND_ISO` pin on the I/O connector.
+- **The service is not running.** `journalctl -u jetson-fan-control.service -b`
+  shows why. If it has no entries at all after a reboot, look for an
+  "ordering cycle" message in `journalctl -b`: the unit must stay
+  `WantedBy=jtop.service` (see the comment in
+  [the unit file](systemd/jetson-fan-control.service)).
+- **jtop version errors in the log.** jetson-stats was upgraded after the
+  install. Re-run `sudo ./install.sh` to rebuild the service's virtualenv
+  with the matching version.
+
 ## Hardware background
 
-Forecr DSBOX-NX2 carrier board, Jetson Xavier NX, L4T R35.6.3. The fan is a
+Forecr DSBOX-NX2 carrier board, Jetson Xavier NX, L4T R35.6. The fan is a
 24V ebm-papst 4414FL (~50mA draw), switched directly by the board's
 `DIGITAL_OUT1` low-side digital output (I/O connector pin 11) — no relay or
 PWM speed control, since the draw is well within the output's rating. Power
@@ -107,6 +185,9 @@ DDR-60G-24 DC-DC converter.
 Which chip drives `DIGITAL_OUT1` depends on the DSBOARD-NX2 revision, so
 there are two drivers, chosen with `FAN_CONTROL_DRIVER`. The default `auto`
 uses the expander if one answers on the I2C bus and the GPIO otherwise.
+`install.sh` makes the same check and then writes the result explicitly. To
+check a board yourself, run `i2cdetect -y -r 8`: an entry at `38` means it
+has the expander.
 
 ### Rev 1.22 or older: I2C I/O expander
 

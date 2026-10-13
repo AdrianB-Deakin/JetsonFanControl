@@ -9,17 +9,18 @@ Type=simple
 # access to /dev/i2c-8.
 User=root
 WorkingDirectory=/opt/jetson-fan-control
-ExecStart=/opt/jetson-fan-control/.venv/bin/jetson-fan-control
-Restart=on-failure
+ExecStart=/opt/jetson-fan-control/.venv/bin/python -m jetson_fan_control
+Restart=always
 RestartSec=5
 
-# Uncomment / adjust to override defaults from jetson_fan_control/config.py
-# without editing code:
-# Environment=FAN_CONTROL_ON_TEMP=55.0
-# Environment=FAN_CONTROL_OFF_TEMP=48.0
-# Environment=FAN_CONTROL_POLL_INTERVAL_SEC=2.0
-# Environment=FAN_CONTROL_TEMP_SENSOR=max
-# Environment=FAN_CONTROL_DRIVER=auto
+# Settings (FAN_CONTROL_* variables, see the README) live in this file so
+# they survive reinstalls; install.sh writes it. Anything not set there
+# falls back to the defaults in jetson_fan_control/config.py.
+EnvironmentFile=-/etc/default/jetson-fan-control
 
 [Install]
-WantedBy=multi-user.target
+# Started alongside jtop.service rather than by multi-user.target:
+# jtop.service is ordered After=multi-user.target, so a unit that is both
+# wanted by multi-user.target and ordered after jtop.service forms an
+# ordering cycle, and systemd drops it from the boot.
+WantedBy=jtop.service

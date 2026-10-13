@@ -1,7 +1,7 @@
 [project]
 name = "jetson-fan-control"
 version = "0.1.0"
-description = "Temperature-based on/off control of a GPIO-switched fan on a Jetson Xavier NX (DSBOX-NX2), using jetson-stats for temperature readings."
+description = "Temperature-based on/off control of a digital-output fan on a Jetson Xavier NX (DSBOX-NX2), using jetson-stats for temperature readings."
 authors = [{ name = "Adrian Bingham", email = "adrian.bingham222@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.8,<3.9"

@@ -1,6 +1,9 @@
 """
 Sysfs GPIO control for the fan's digital output.
 
+Used on DSBOARD-NX2 rev 1.23 or newer, where the output is a Jetson GPIO;
+older revisions use the I2C I/O expander in expander_fan.py instead.
+
 Requires root (the export/direction/value files under /sys/class/gpio are
 only writable by root on stock L4T). Run the controller as root, e.g. via
 the provided systemd unit.
