@@ -1,8 +1,8 @@
 """
 Fan on/off decision logic and the live control loop.
 
-FanDecider is pure logic (no jtop/GPIO calls) so it can be unit tested in
-isolation; run() wires it up to jetson-stats and the sysfs GPIO fan.
+FanDecider is pure logic (no jtop/I2C calls) so it can be unit tested in
+isolation; run() wires it up to jetson-stats and the configured fan driver.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from typing import Optional
 from jtop import jtop
 
 from .config import Config
+from .expander_fan import ExpanderFan, ExpanderFanError
 from .gpio_fan import GpioFan
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,27 @@ def pick_temperature(jtop_temperature: dict, sensor: str) -> float:
     return online[sensor]
 
 
+def setup_fan(config: Config):
+    """Create and set up the fan driver selected by config.fan_driver."""
+    expander = ExpanderFan(config.i2c_bus, config.i2c_address, config.expander_pin)
+    gpio = GpioFan(config.gpio_number, config.gpio_line_name)
+
+    if config.fan_driver == "expander":
+        fan = expander
+    elif config.fan_driver == "gpio":
+        fan = gpio
+    else:
+        try:
+            expander.setup()
+            return expander
+        except ExpanderFanError as exc:
+            logger.info("No I/O expander (%s); using sysfs GPIO driver", exc)
+            fan = gpio
+
+    fan.setup()
+    return fan
+
+
 class _StopRequested(Exception):
     pass
 
@@ -72,8 +94,7 @@ def run(config: Config) -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
 
-    fan = GpioFan(config.gpio_number, config.gpio_line_name)
-    fan.setup()
+    fan = setup_fan(config)
 
     decider = FanDecider(on_temp=config.on_temp, off_temp=config.off_temp)
 

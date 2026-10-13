@@ -6,7 +6,7 @@ zone temperatures via [jetson-stats](https://github.com/rbonghi/jetson_stats)
 (`jtop`) and switches the fan on above a threshold, off below a lower
 threshold (hysteresis, to avoid rapid on/off chatter).
 
-This is on/off GPIO switching, not PWM speed control — see
+This is on/off switching of a digital output, not PWM speed control — see
 [Hardware background](#hardware-background) below for why.
 
 ## Requirements
@@ -42,10 +42,12 @@ poetry install
 
 ## Running
 
-Manual run (needs root for sysfs GPIO access):
+Manual run. The I2C expander driver only needs access to `/dev/i2c-8` (root,
+or a user in the `i2c` group); the sysfs GPIO driver needs root, so add
+`sudo` on boards that use it:
 
 ```bash
-sudo $(poetry env info --path)/bin/jetson-fan-control
+$(poetry env info --path)/bin/jetson-fan-control
 ```
 
 ### As a systemd service (recommended for deployment)
@@ -74,8 +76,12 @@ and can be overridden with environment variables (e.g. in the systemd unit):
 | `FAN_CONTROL_OFF_TEMP` | `48.0` | °C at/below which the fan turns off |
 | `FAN_CONTROL_TEMP_SENSOR` | `max` | jtop sensor to use (`max`, or e.g. `CPU`, `GPU`, `thermal`) |
 | `FAN_CONTROL_POLL_INTERVAL_SEC` | `2.0` | seconds between jtop reads |
-| `FAN_CONTROL_GPIO_NUMBER` | `487` | sysfs GPIO number for DIGITAL_OUT1 |
-| `FAN_CONTROL_GPIO_LINE_NAME` | `PY.03` | sysfs directory name fallback (see below) |
+| `FAN_CONTROL_DRIVER` | `auto` | `expander`, `gpio`, or `auto` (expander if one answers on I2C, else GPIO) — see [Hardware background](#hardware-background) |
+| `FAN_CONTROL_I2C_BUS` | `8` | expander driver: I2C bus the I/O expander is on |
+| `FAN_CONTROL_I2C_ADDRESS` | `0x38` | expander driver: I2C address of the I/O expander |
+| `FAN_CONTROL_EXPANDER_PIN` | `5` | expander driver: pin wired to DIGITAL_OUT1 |
+| `FAN_CONTROL_GPIO_NUMBER` | `487` | GPIO driver: sysfs GPIO number for DIGITAL_OUT1 |
+| `FAN_CONTROL_GPIO_LINE_NAME` | `PY.03` | GPIO driver: sysfs directory name fallback |
 | `FAN_CONTROL_FAIL_SAFE_ON_EXIT` | `1` | force fan ON on clean shutdown (safer than leaving it off) |
 
 ## Testing
@@ -85,7 +91,8 @@ poetry run pytest
 ```
 
 Tests cover the hysteresis decision logic and temperature-sensor selection
-in isolation (no real hardware/jtop needed). The GPIO and jtop integration
+in isolation, plus both fan drivers against a fake I2C bus and a fake sysfs
+directory (no real hardware/jtop needed). The I2C, GPIO and jtop integration
 itself can only be exercised on the actual device.
 
 ## Hardware background
@@ -97,7 +104,32 @@ PWM speed control, since the draw is well within the output's rating. Power
 comes from a solar/battery rail regulated to a clean 24V by a MEAN WELL
 DDR-60G-24 DC-DC converter.
 
-On this board/L4T build, `DIGITAL_OUT1` is global sysfs GPIO **487**
+Which chip drives `DIGITAL_OUT1` depends on the DSBOARD-NX2 revision, so
+there are two drivers, chosen with `FAN_CONTROL_DRIVER`. The default `auto`
+uses the expander if one answers on the I2C bus and the GPIO otherwise.
+
+### Rev 1.22 or older: I2C I/O expander
+
+`DIGITAL_OUT1` is pin P5 of a PCF8574A I/O expander at address `0x38` on I2C
+bus 8. [`expander_fan.py`](jetson_fan_control/expander_fan.py) drives it
+directly over I2C with `smbus2`, so no kernel driver or device-tree change
+is needed. The output is active-high (pin high = fan on), and the expander
+powers up with all pins high, so the fan runs from power-on until the
+controller takes over.
+
+The expander's other pins are P0/P1 = `DIGITAL_IN0`/`DIGITAL_IN1`, P4/P6 =
+`DIGITAL_OUT0`/`DIGITAL_OUT2` and P2/P3/P7 = the power LED. The controller
+only changes the fan's bit and leaves the rest as it finds them. To toggle
+the fan by hand:
+
+```bash
+i2cset -y 8 0x38 0xdf   # fan off
+i2cset -y 8 0x38 0xff   # fan on
+```
+
+### Rev 1.23 or newer: Jetson GPIO
+
+`DIGITAL_OUT1` is Jetson GPIO `PY.03`, global sysfs GPIO **487** on L4T R35.6
 (`tegra194-gpio` chip, base offset 335 + device-tree line offset 152). After
 exporting, this kernel creates the sysfs directory under the device-tree
 line name (`/sys/class/gpio/PY.03/`) rather than `/sys/class/gpio/gpio487/`.

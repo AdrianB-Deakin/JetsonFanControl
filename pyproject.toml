@@ -11,6 +11,7 @@ dependencies = [
     # target device (jtop refuses to talk to a mismatched service version).
     # Check with `jtop --version` on the Jetson and update this pin to match.
     "jetson-stats (==4.3.2)",
+    "smbus2 (>=0.6,<0.7)",
 ]
 
 [tool.poetry]

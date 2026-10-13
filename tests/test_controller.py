@@ -1,5 +1,7 @@
 import pytest
 
+from jetson_fan_control import controller
+from jetson_fan_control.config import Config
 from jetson_fan_control.controller import FanDecider, pick_temperature
 
 
@@ -66,3 +68,43 @@ class TestPickTemperature:
         readings = {"CPU": {"temp": 40.0, "online": False}}
         with pytest.raises(RuntimeError):
             pick_temperature(readings, "max")
+
+
+class _FakeFan:
+    def __init__(self, *args):
+        self.is_set_up = False
+
+    def setup(self):
+        self.is_set_up = True
+
+
+class _MissingExpander(_FakeFan):
+    def setup(self):
+        raise controller.ExpanderFanError("no response")
+
+
+@pytest.fixture
+def fake_drivers(monkeypatch):
+    monkeypatch.setattr(controller, "ExpanderFan", type("Expander", (_FakeFan,), {}))
+    monkeypatch.setattr(controller, "GpioFan", type("Gpio", (_FakeFan,), {}))
+
+
+@pytest.mark.parametrize(
+    "driver, expected", [("expander", "Expander"), ("gpio", "Gpio"), ("auto", "Expander")]
+)
+def test_setup_fan_selects_configured_driver(fake_drivers, driver, expected):
+    fan = controller.setup_fan(Config(fan_driver=driver))
+    assert type(fan).__name__ == expected
+    assert fan.is_set_up
+
+
+def test_setup_fan_auto_falls_back_to_gpio_without_expander(fake_drivers, monkeypatch):
+    monkeypatch.setattr(controller, "ExpanderFan", _MissingExpander)
+    fan = controller.setup_fan(Config(fan_driver="auto"))
+    assert type(fan).__name__ == "Gpio"
+    assert fan.is_set_up
+
+
+def test_unknown_fan_driver_is_rejected():
+    with pytest.raises(ValueError):
+        Config(fan_driver="pwm")

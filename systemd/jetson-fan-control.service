@@ -1,11 +1,12 @@
 [Unit]
-Description=Jetson Xavier NX fan temperature controller (DSBOX-NX2 GPIO fan)
+Description=Jetson Xavier NX fan temperature controller (DSBOX-NX2 digital-output fan)
 After=jtop.service network-online.target
 Requires=jtop.service
 
 [Service]
 Type=simple
-# Sysfs GPIO export/direction/value are root-only on stock L4T.
+# The sysfs GPIO driver needs root; the I2C expander driver only needs
+# access to /dev/i2c-8.
 User=root
 WorkingDirectory=/opt/jetson-fan-control
 ExecStart=/opt/jetson-fan-control/.venv/bin/jetson-fan-control
@@ -18,6 +19,7 @@ RestartSec=5
 # Environment=FAN_CONTROL_OFF_TEMP=48.0
 # Environment=FAN_CONTROL_POLL_INTERVAL_SEC=2.0
 # Environment=FAN_CONTROL_TEMP_SENSOR=max
+# Environment=FAN_CONTROL_DRIVER=auto
 
 [Install]
 WantedBy=multi-user.target
