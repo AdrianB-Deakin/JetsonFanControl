@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 #
-# Installs the fan controller as a systemd service that starts on boot,
-# then sets up the development tools (pyenv, Poetry and the project's
-# Poetry environment) for the user who ran it.
+# Installs the fan controller as a systemd service that starts on boot.
 #
 #   sudo ./install.sh
 #
@@ -19,19 +17,6 @@ UNIT_FILE=/etc/systemd/system/$SERVICE
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$INSTALL_DIR/.venv"
 PYTHON="$VENV/bin/python"
-
-# Development tools. Poetry 2.x needs Python >= 3.10 to run, so it gets its
-# own pyenv-built interpreter. Its bundled virtualenv is pinned because newer
-# releases can no longer create the Python 3.8 environment this project needs.
-PROJECT_PYTHON_VERSION="$(cat "$SRC_DIR/.python-version")"
-POETRY_VERSION=2.3.4
-POETRY_PYTHON_VERSION=3.12.7
-POETRY_VIRTUALENV_VERSION=20.26.6
-DEV_USER="${SUDO_USER:-root}"
-DEV_HOME="$(getent passwd "$DEV_USER" | cut -d: -f6)"
-PYENV_ROOT="$DEV_HOME/.pyenv"
-POETRY_HOME="$DEV_HOME/.local/share/pypoetry"
-POETRY="$DEV_HOME/.local/bin/poetry"
 
 step() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -65,23 +50,6 @@ set_env() {
 # run_python: run a Python script from stdin inside the installed project
 run_python() { (cd "$INSTALL_DIR" && "$PYTHON" -); }
 
-# as_dev_user <command...>: run as the user who invoked sudo, with pyenv and
-# Poetry on PATH
-as_dev_user() {
-    sudo -u "$DEV_USER" -H env \
-        PYENV_ROOT="$PYENV_ROOT" \
-        PATH="$PYENV_ROOT/bin:$DEV_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
-        "$@"
-}
-
-# pyenv_install <version>: build a Python with pyenv unless already present
-pyenv_install() {
-    if [[ ! -x "$PYENV_ROOT/versions/$1/bin/python" ]]; then
-        echo "Building Python $1 from source - this can take 10-20 minutes"
-        as_dev_user pyenv install -s "$1"
-    fi
-    echo "Python $1 is available in pyenv"
-}
 
 [[ $EUID -eq 0 ]] || die "run this as root: sudo $0"
 command -v systemctl >/dev/null || die "systemd is required"
@@ -240,58 +208,5 @@ The fan controller is running and will start on every boot.
   Live log:         journalctl -u $SERVICE -f
   Change settings:  edit $ENV_FILE, then: sudo systemctl restart $SERVICE
                     (or re-run this script)
-
-The rest of this script only sets up development tools; the service above
-is unaffected if it is interrupted or fails.
 EOF
 
-# ---------------------------------------------------------------------------
-step "Installing pyenv for $DEV_USER"
-apt-get update
-apt-get install -y build-essential curl git libssl-dev zlib1g-dev libbz2-dev \
-    libreadline-dev libsqlite3-dev libffi-dev liblzma-dev
-if [[ ! -x "$PYENV_ROOT/bin/pyenv" ]]; then
-    as_dev_user bash -c 'curl -fsSL https://pyenv.run | bash'
-fi
-if ! grep -qs 'pyenv init' "$DEV_HOME/.bashrc"; then
-    as_dev_user tee -a "$DEV_HOME/.bashrc" >/dev/null <<'EOF'
-
-# pyenv and Poetry (added by JetsonFanControl install.sh)
-export PYENV_ROOT="$HOME/.pyenv"
-export PATH="$PYENV_ROOT/bin:$HOME/.local/bin:$PATH"
-eval "$(pyenv init - bash)"
-EOF
-fi
-pyenv_install "$PROJECT_PYTHON_VERSION"
-
-# ---------------------------------------------------------------------------
-step "Installing Poetry $POETRY_VERSION for $DEV_USER"
-if [[ "$(as_dev_user "$POETRY" --version 2>/dev/null)" == *"version $POETRY_VERSION)"* ]]; then
-    echo "Poetry $POETRY_VERSION is already installed"
-else
-    pyenv_install "$POETRY_PYTHON_VERSION"
-    # An older Poetry is kept next to the new one rather than deleted.
-    if [[ -d "$POETRY_HOME/venv" ]]; then
-        as_dev_user mv "$POETRY_HOME/venv" "$POETRY_HOME/venv.replaced-$(date +%Y%m%d%H%M%S)"
-    fi
-    as_dev_user mkdir -p "$POETRY_HOME" "$DEV_HOME/.local/bin"
-    as_dev_user "$PYENV_ROOT/versions/$POETRY_PYTHON_VERSION/bin/python" -m venv "$POETRY_HOME/venv"
-    as_dev_user "$POETRY_HOME/venv/bin/pip" install --quiet \
-        "poetry==$POETRY_VERSION" "virtualenv==$POETRY_VIRTUALENV_VERSION"
-    as_dev_user ln -sf "$POETRY_HOME/venv/bin/poetry" "$POETRY"
-    as_dev_user "$POETRY" --version
-fi
-
-# ---------------------------------------------------------------------------
-step "Setting up the project's Poetry environment"
-as_dev_user "$POETRY" --directory "$SRC_DIR" env use \
-    "$PYENV_ROOT/versions/$PROJECT_PYTHON_VERSION/bin/python"
-as_dev_user "$POETRY" --directory "$SRC_DIR" install
-as_dev_user "$POETRY" --directory "$SRC_DIR" run pytest -q
-
-cat <<EOF
-
-Done. Development tools are ready for $DEV_USER (open a new terminal first
-if pyenv or poetry is not found):
-  cd $SRC_DIR && poetry run pytest
-EOF

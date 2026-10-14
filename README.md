@@ -15,9 +15,6 @@ This is on/off switching of a digital output, not PWM speed control — see
 sudo ./install.sh
 ```
 
-Run it as your normal user with `sudo`, not from a root shell: the
-development tools in step 6 are installed for the user who invoked `sudo`.
-
 The script:
 
 1. checks `jtop.service` is running (installing jetson-stats if it is
@@ -30,14 +27,7 @@ The script:
    you answer no, it tries the other driver;
 4. asks for the on/off temperatures;
 5. installs and starts `jetson-fan-control.service`, enabled on boot and
-   restarted automatically if it ever exits;
-6. sets up the development tools for the user who ran `sudo`: pyenv, the
-   Python version in `.python-version`, Poetry, and this project's Poetry
-   environment (the same result as [Development setup](#development-setup)
-   below, then runs the tests). This comes last and does not affect the
-   service if it fails. On a machine without pyenv it builds Python from
-   source twice (once for the project, once to run Poetry), which can take
-   20-40 minutes.
+   restarted automatically if it ever exits.
 
 It is safe to re-run, e.g. after pulling new code: it keeps the current
 settings as the defaults for its prompts. Without a terminal it takes every
@@ -99,7 +89,8 @@ them in `/etc/default/jetson-fan-control`, one `NAME=value` per line;
 
 ## Development setup
 
-`install.sh` does all of this. To set it up by hand instead:
+Only needed to work on the code; the installed service does not use any of
+this. You need:
 
 - pyenv
 - Poetry 2.x (older versions cannot read this project's `pyproject.toml`).
