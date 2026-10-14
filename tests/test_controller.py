@@ -108,3 +108,40 @@ def test_setup_fan_auto_falls_back_to_gpio_without_expander(fake_drivers, monkey
 def test_unknown_fan_driver_is_rejected():
     with pytest.raises(ValueError):
         Config(fan_driver="pwm")
+
+
+class _FakeJtop:
+    """Stands in for jtop: start() fails until `fail_starts` attempts have run."""
+
+    attempts = 0
+    fail_starts = 0
+
+    def __init__(self, interval):
+        self.interval = interval
+
+    def start(self):
+        type(self).attempts += 1
+        if type(self).attempts <= type(self).fail_starts:
+            raise controller.JtopException("The jtop.service is not active.\nPlease run...")
+
+
+@pytest.fixture
+def fake_jtop(monkeypatch):
+    fake = type("FakeJtop", (_FakeJtop,), {"attempts": 0, "fail_starts": 0})
+    monkeypatch.setattr(controller, "jtop", fake)
+    monkeypatch.setattr(controller.time, "sleep", lambda _s: None)
+    return fake
+
+
+def test_connect_jtop_retries_until_service_is_ready(fake_jtop):
+    fake_jtop.fail_starts = 3
+    jetson = controller.connect_jtop(interval=2.0, timeout=60.0)
+    assert fake_jtop.attempts == 4
+    assert jetson.interval == 2.0
+
+
+def test_connect_jtop_gives_up_after_timeout(fake_jtop):
+    fake_jtop.fail_starts = 10**6
+    with pytest.raises(controller.JtopException):
+        controller.connect_jtop(interval=2.0, timeout=0.0)
+    assert fake_jtop.attempts == 1

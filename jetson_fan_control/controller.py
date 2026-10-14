@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import logging
 import signal
+import time
 from typing import Optional
 
-from jtop import jtop
+from jtop import JtopException, jtop
 
 from .config import Config
 from .expander_fan import ExpanderFan, ExpanderFanError
@@ -85,6 +86,26 @@ def setup_fan(config: Config):
     return fan
 
 
+def connect_jtop(interval: float, timeout: float = 60.0, retry_delay: float = 1.0):
+    """Connect to jtop.service, retrying until it is ready or timeout passes.
+
+    At boot systemd starts this unit as soon as the jtop.service process has
+    launched, which is before its socket exists, so the first attempts can
+    fail with "The jtop.service is not active".
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        jetson = jtop(interval=interval)
+        try:
+            jetson.start()
+            return jetson
+        except JtopException as exc:
+            if time.monotonic() >= deadline:
+                raise
+            logger.info("Waiting for jtop.service: %s", str(exc).splitlines()[0])
+            time.sleep(retry_delay)
+
+
 class _StopRequested(Exception):
     pass
 
@@ -110,18 +131,18 @@ def run(config: Config) -> None:
     )
 
     try:
-        with jtop(interval=config.poll_interval_sec) as jetson:
-            while jetson.ok():
-                temp_c = pick_temperature(jetson.temperature, config.temp_sensor)
-                want_on = decider.decide(temp_c)
+        jetson = connect_jtop(config.poll_interval_sec)
+        while jetson.ok():
+            temp_c = pick_temperature(jetson.temperature, config.temp_sensor)
+            want_on = decider.decide(temp_c)
 
-                if fan.get() != want_on:
-                    fan.set(want_on)
-                    logger.info(
-                        "temp=%.1fC -> fan %s", temp_c, "ON" if want_on else "OFF"
-                    )
-                else:
-                    logger.debug("temp=%.1fC -> fan unchanged (%s)", temp_c, want_on)
+            if fan.get() != want_on:
+                fan.set(want_on)
+                logger.info(
+                    "temp=%.1fC -> fan %s", temp_c, "ON" if want_on else "OFF"
+                )
+            else:
+                logger.debug("temp=%.1fC -> fan unchanged (%s)", temp_c, want_on)
     except _StopRequested as exc:
         logger.info("Received %s, shutting down", exc)
     finally:
