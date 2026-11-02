@@ -170,6 +170,10 @@ def run(config: Config) -> None:
 
     try:
         jetson = connect_jtop(config.poll_interval_sec)
+        logger.info("Connected to jtop.service")
+        # Log the first reading even if the fan is already in the right
+        # state, so the log shows the loop is running.
+        first_reading = True
         while jetson.ok():
             temp_c = pick_temperature(jetson.temperature, config.temp_sensor)
             want_on = decider.decide(temp_c)
@@ -179,8 +183,13 @@ def run(config: Config) -> None:
                 logger.info(
                     "temp=%.1fC -> fan %s", temp_c, "ON" if want_on else "OFF"
                 )
+            elif first_reading:
+                logger.info(
+                    "temp=%.1fC -> fan stays %s", temp_c, "ON" if want_on else "OFF"
+                )
             else:
                 logger.debug("temp=%.1fC -> fan unchanged (%s)", temp_c, want_on)
+            first_reading = False
 
             if history is not None:
                 history.record(temp_c, want_on)

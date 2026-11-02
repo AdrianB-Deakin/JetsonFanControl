@@ -149,6 +149,54 @@ def test_connect_jtop_gives_up_after_timeout(fake_jtop):
     assert fake_jtop.attempts == 1
 
 
+class _FakeLiveFan:
+    def __init__(self, on):
+        self.on = on
+
+    def get(self):
+        return self.on
+
+    def set(self, on):
+        self.on = on
+
+
+class _FakeLiveJtop:
+    """Reports each temperature in `temps` once, then stops."""
+
+    def __init__(self, temps):
+        self._temps = list(temps)
+        self.temperature = None
+
+    def ok(self):
+        if not self._temps:
+            return False
+        self.temperature = {"CPU": {"temp": self._temps.pop(0), "online": True}}
+        return True
+
+
+def run_with(monkeypatch, caplog, fan_on, temps):
+    monkeypatch.setattr(controller, "setup_fan", lambda _config: _FakeLiveFan(fan_on))
+    monkeypatch.setattr(controller, "connect_jtop", lambda _interval: _FakeLiveJtop(temps))
+    caplog.set_level("INFO", logger=controller.__name__)
+    controller.run(Config(on_temp=40.0, off_temp=30.0, history_db="", fail_safe_on_exit=False))
+    return [r.getMessage() for r in caplog.records if r.name == controller.__name__]
+
+
+def test_run_logs_connection_and_first_reading_when_fan_already_right(monkeypatch, caplog):
+    # The fan powers up on; above on_temp nothing changes, but the log should
+    # still show the loop started.
+    messages = run_with(monkeypatch, caplog, fan_on=True, temps=[46.0, 46.5])
+    assert "Connected to jtop.service" in messages
+    assert "temp=46.0C -> fan stays ON" in messages
+    assert not any("46.5" in m for m in messages)
+
+
+def test_run_logs_first_reading_once_when_it_switches_the_fan(monkeypatch, caplog):
+    messages = run_with(monkeypatch, caplog, fan_on=True, temps=[35.0, 25.0])
+    assert "temp=35.0C -> fan OFF" in messages
+    assert not any("stays" in m for m in messages)
+
+
 def test_connect_jtop_leaves_no_alarm_behind(fake_jtop):
     controller.connect_jtop(interval=2.0)
     assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
