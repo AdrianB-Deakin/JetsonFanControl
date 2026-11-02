@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import signal
 import time
+from contextlib import contextmanager
 from typing import Optional
 
 from jtop import JtopException, jtop
@@ -87,18 +88,53 @@ def setup_fan(config: Config):
     return fan
 
 
-def connect_jtop(interval: float, timeout: float = 60.0, retry_delay: float = 1.0):
+class JtopStartTimeout(RuntimeError):
+    """jtop.service accepted the connection but never finished the start-up."""
+
+
+@contextmanager
+def _time_limit(seconds: float):
+    """Raise JtopStartTimeout in the main thread if the block runs too long.
+
+    A signal interrupts a blocking socket read, which a thread cannot do.
+    """
+    def _expired(_signum, _frame):
+        raise JtopStartTimeout(f"no answer from jtop.service within {seconds:.0f}s")
+
+    previous = signal.signal(signal.SIGALRM, _expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def connect_jtop(
+    interval: float,
+    timeout: float = 60.0,
+    retry_delay: float = 1.0,
+    attempt_timeout: float = 15.0,
+):
     """Connect to jtop.service, retrying until it is ready or timeout passes.
 
     At boot systemd starts this unit as soon as the jtop.service process has
     launched, which is before its socket exists, so the first attempts can
     fail with "The jtop.service is not active".
+
+    jtop creates its socket a few seconds before the service is ready, and
+    jtop.start() has no timeout of its own: connecting in that window can
+    block forever. Each attempt is therefore cut short after attempt_timeout
+    with JtopStartTimeout, which is not retried here because the abandoned
+    connection may be left half-open; the caller exits and systemd restarts
+    the service with a fresh process.
     """
     deadline = time.monotonic() + timeout
     while True:
         jetson = jtop(interval=interval)
         try:
-            jetson.start()
+            with _time_limit(attempt_timeout):
+                jetson.start()
             return jetson
         except JtopException as exc:
             if time.monotonic() >= deadline:

@@ -1,3 +1,5 @@
+import signal
+
 import pytest
 
 from jetson_fan_control import controller
@@ -145,3 +147,19 @@ def test_connect_jtop_gives_up_after_timeout(fake_jtop):
     with pytest.raises(controller.JtopException):
         controller.connect_jtop(interval=2.0, timeout=0.0)
     assert fake_jtop.attempts == 1
+
+
+def test_connect_jtop_leaves_no_alarm_behind(fake_jtop):
+    controller.connect_jtop(interval=2.0)
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    assert signal.getsignal(signal.SIGALRM) == signal.SIG_DFL
+
+
+def test_connect_jtop_cuts_short_a_start_that_hangs(fake_jtop, monkeypatch):
+    # jtop.start() blocked forever when it connected while the service was
+    # still initialising; signal.pause() blocks the same way.
+    monkeypatch.setattr(fake_jtop, "start", lambda self: signal.pause())
+    with pytest.raises(controller.JtopStartTimeout):
+        controller.connect_jtop(interval=2.0, attempt_timeout=0.05)
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    assert signal.getsignal(signal.SIGALRM) == signal.SIG_DFL

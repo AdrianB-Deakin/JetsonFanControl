@@ -325,6 +325,13 @@ or revisit them deliberately.
   resolves by dropping it from the boot. The controller also retries its
   jtop connection for 60 seconds, because at boot it starts before
   jtop.service's socket is ready.
+- **Each jtop connection attempt is time-limited.** jtop creates its socket
+  a few seconds before it is ready to answer, and the jtop client has no
+  timeout of its own, so connecting in that window could hang the
+  controller indefinitely. An attempt that takes over 15 seconds is
+  interrupted (with `SIGALRM`, since a signal can break a blocking socket
+  read); the controller then forces the fan on and exits, and systemd
+  restarts it with a fresh connection 5 seconds later.
 - **Plain `venv` + `pip` in `/opt`, not Poetry.** The service must not
   depend on developer tooling (pyenv, Poetry). Each install builds a fresh
   virtualenv so packages from older versions do not linger.
