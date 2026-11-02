@@ -22,6 +22,7 @@ pytest = "^8.3"
 
 [tool.poetry.scripts]
 jetson-fan-control = "jetson_fan_control.__main__:main"
+jetson-fan-stats = "jetson_fan_control.report:main"
 
 [build-system]
 requires = ["poetry-core>=2.0"]

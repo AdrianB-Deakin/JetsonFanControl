@@ -17,21 +17,55 @@ sudo ./install.sh
 
 The script:
 
-1. checks `jtop.service` is running (installing jetson-stats if it is
-   missing) and reads its version;
-2. copies the code to `/opt/jetson-fan-control` and builds a virtualenv
-   there with the matching jetson-stats version (plain `venv` + `pip`, so
-   the service does not depend on pyenv or Poetry);
+1. installs anything missing (`python3.8`, `python3.8-venv`, `python3-pip`
+   via apt; jetson-stats via pip) and checks `jtop.service` is running,
+   reading its version. Python 3.8 is the system Python on L4T R35 (Ubuntu
+   20.04); on newer Ubuntu releases it is not in the standard repositories
+   and the script stops with an error. pip needs network access;
+2. builds the code and a fresh virtualenv with the matching jetson-stats
+   version in `/opt/jetson-fan-control.new` (plain `venv` + `pip`, so the
+   service does not depend on pyenv or Poetry), and checks it all imports;
 3. identifies the fan driver for this board, and offers to pulse the fan
    (off for 4 seconds, then on) so you can confirm it is the right one — if
-   you answer no, it tries the other driver;
+   you answer no, it tries the other driver. On an update, the driver
+   confirmed last time is kept unless you test again, so a remote update
+   does not need anyone watching the fan;
 4. asks for the on/off temperatures;
-5. installs and starts `jetson-fan-control.service`, enabled on boot and
-   restarted automatically if it ever exits.
+5. moves the new build into `/opt/jetson-fan-control` and installs the
+   `jetson-fan-stats` command (see [Temperature history](#temperature-history));
+6. installs and starts `jetson-fan-control.service`, enabled on boot and
+   restarted automatically if it ever exits, and checks it stays running.
 
-It is safe to re-run, e.g. after pulling new code: it keeps the current
-settings as the defaults for its prompts. Without a terminal it takes every
-default and skips the fan test.
+### Updating
+
+Pull the new code and run `sudo ./install.sh` again; it keeps the current
+settings as the defaults for its prompts, so over SSH you can press Enter
+at every prompt. Without a terminal it takes every default and skips the
+fan test.
+
+What happens to a running install:
+
+- **The fan stays under control during the build.** The new version is
+  built in `/opt/jetson-fan-control.new` while the old service keeps
+  running. The service is only stopped for the fan test (if you choose it)
+  and for the final swap into `/opt/jetson-fan-control`.
+- **A failed build changes nothing.** If anything fails or you press Ctrl-C
+  before the swap, the build is deleted and, if the script had stopped the
+  service, the old one is started again.
+- **A failed start is rolled back.** After the swap the script waits 10
+  seconds and checks the service is still running and has not restarted
+  itself. If not, it shows the log and moves the previous version back,
+  starting it if it was running before. The new settings file, unit file
+  and `jetson-fan-stats` command stay in place; older code works with all
+  of them except `jetson-fan-stats`, which needs a version with history.
+- **The fan driver is kept.** The driver saved by the previous install
+  becomes the default and the fan test defaults to "no", so nobody needs to
+  watch the fan. The I2C check still runs; if it disagrees with the saved
+  driver the script says so (e.g. after a board swap) but keeps the saved
+  one unless you test. A test tries the saved driver first.
+- **The temperature history is kept.** It lives in
+  `/var/lib/jetson-fan-control`, which the installer never touches (see
+  [Temperature history](#temperature-history)).
 
 ### Managing the service
 
@@ -62,8 +96,88 @@ To remove it:
 ```bash
 sudo systemctl disable --now jetson-fan-control.service
 sudo rm /etc/systemd/system/jetson-fan-control.service /etc/default/jetson-fan-control
-sudo rm -r /opt/jetson-fan-control
+sudo rm /usr/local/bin/jetson-fan-stats
+sudo rm -r /opt/jetson-fan-control /var/lib/jetson-fan-control  # the latter holds the history
 sudo systemctl daemon-reload
+```
+
+## Temperature history
+
+The service records the temperature it acts on (see
+`FAN_CONTROL_TEMP_SENSOR`) to an SQLite database,
+`/var/lib/jetson-fan-control/history.db`. Like
+[vnstat](https://humdi.net/vnstat/), it stores summaries rather than every
+reading: one row per minute (kept for 30 days by default) and one row per
+hour (kept forever, under 9,000 rows a year). Each row holds the min, mean
+and max temperature and how much of the period the fan was on. A row is
+written as each minute ends, so the current minute does not show yet.
+
+Recording is best effort: if the database cannot be opened or written, the
+service logs a warning and carries on controlling the fan. Set
+`FAN_CONTROL_HISTORY_DB` to an empty value to turn it off.
+
+`jetson-fan-stats` presents it, in local time, without needing root (it
+opens the database read-only, so it cannot disturb the service):
+
+```bash
+jetson-fan-stats              # last 30 days
+jetson-fan-stats minute       # last 60 minutes
+jetson-fan-stats hour -n 48   # last 48 hours
+jetson-fan-stats month        # last 12 months
+jetson-fan-stats day --csv    # CSV, e.g. for a spreadsheet
+jetson-fan-stats --db FILE    # read another database, e.g. a set-aside one
+```
+
+It reads `/etc/default/jetson-fan-control` like the service does, so it
+finds the database even if `FAN_CONTROL_HISTORY_DB` was changed there.
+
+```text
+day            min     avg     max  fan on
+------------------------------------------
+2026-10-31    33.0    35.5    38.0     58%
+2026-11-01    32.4    35.1    39.2     55%
+2026-11-02    31.9    34.7    38.6     49%
+(temperatures in deg C)
+```
+
+### Times and time zones
+
+Times are stored as Unix timestamps (UTC seconds) and only converted to
+dates when displayed, using the Jetson's time zone. Other tools reading the
+database can show them in any zone. Hourly rows start on the UTC hour, so
+in a time zone with a half-hour offset (e.g. Adelaide, UTC+9:30) each local
+day or hour would include half an hour of its neighbour. Whole-hour zones
+such as Melbourne are exact.
+
+### Updates and format changes
+
+Updating the service with `install.sh` keeps the history: the database is
+in `/var/lib/jetson-fan-control`, which the installer never touches.
+
+The database carries a format version in SQLite's `user_version` header
+(`SCHEMA_VERSION` in [history.py](jetson_fan_control/history.py)). If the
+service finds a database with a different version, it renames it to
+`history.db.v<N>` (adding a timestamp if that name is taken) and starts a
+fresh one, so old data is never deleted; the matching version of
+`jetson-fan-stats` can still read it with `--db`. `jetson-fan-stats` itself
+refuses a database whose version it does not match, rather than showing
+wrong numbers. **Whenever the tables change shape, bump `SCHEMA_VERSION`.**
+
+### Reading the database directly
+
+```bash
+sudo apt install sqlite3   # not installed by default on L4T
+sqlite3 -readonly /var/lib/jetson-fan-control/history.db
+```
+
+The `minute` and `hour` tables have one row per period: `start` (UTC Unix
+time of the period's start), `samples`, `temp_sum` (divide by `samples` for
+the mean), `temp_min`, `temp_max` and `fan_on_samples` (divide by `samples`
+for the fraction of the period the fan was on). For example:
+
+```sql
+SELECT datetime(start, 'unixepoch', 'localtime'), temp_sum / samples
+FROM hour ORDER BY start DESC LIMIT 24;
 ```
 
 ## Configuration
@@ -86,6 +200,8 @@ them in `/etc/default/jetson-fan-control`, one `NAME=value` per line;
 | `FAN_CONTROL_GPIO_NUMBER` | `487` | GPIO driver: sysfs GPIO number for DIGITAL_OUT1 |
 | `FAN_CONTROL_GPIO_LINE_NAME` | `PY.03` | GPIO driver: sysfs directory name fallback |
 | `FAN_CONTROL_FAIL_SAFE_ON_EXIT` | `1` | force fan ON on clean shutdown (safer than leaving it off) |
+| `FAN_CONTROL_HISTORY_DB` | `/var/lib/jetson-fan-control/history.db` | temperature history database; empty disables recording |
+| `FAN_CONTROL_HISTORY_MINUTE_DAYS` | `30` | days of per-minute history to keep (hourly history is kept forever) |
 
 ## Development setup
 
@@ -144,8 +260,9 @@ poetry run pytest
 ```
 
 Tests cover the hysteresis decision logic and temperature-sensor selection
-in isolation, plus both fan drivers against a fake I2C bus and a fake sysfs
-directory (no real hardware/jtop needed). The I2C, GPIO and jtop integration
+in isolation, both fan drivers against a fake I2C bus and a fake sysfs
+directory, and the temperature history and its reports against a temporary
+database (no real hardware/jtop needed). The I2C, GPIO and jtop integration
 itself can only be exercised on the actual device.
 
 ## Troubleshooting
@@ -163,6 +280,101 @@ itself can only be exercised on the actual device.
 - **jtop version errors in the log.** jetson-stats was upgraded after the
   install. Re-run `sudo ./install.sh` to rebuild the service's virtualenv
   with the matching version.
+- **`jetson-fan-stats` shows nothing.** Rows appear once each minute ends.
+  If there are still none after a few minutes, look for "Temperature
+  history" warnings in `journalctl -u jetson-fan-control.service`.
+- **`jetson-fan-stats` reports a different format version.** The service
+  and the command come from different versions; re-run `sudo ./install.sh`
+  so both are updated together.
+- **The install was rolled back.** The log shown by the script says why the
+  new version did not stay running. The previous version is in place again
+  and nothing else needs undoing.
+
+## Design decisions
+
+The choices behind the current design, and why, so future changes can keep
+or revisit them deliberately.
+
+### Fan control
+
+- **On/off, not PWM.** The fan draws about 50mA, well within the rating of
+  the board's `DIGITAL_OUT1` low-side switch, so it is switched directly
+  without a relay or speed control (see
+  [Hardware background](#hardware-background)).
+- **Two thresholds (hysteresis).** The fan turns on at `ON_TEMP` and off
+  only at the lower `OFF_TEMP`, so a temperature hovering at one threshold
+  cannot switch it rapidly on and off. The config refuses an `OFF_TEMP`
+  that is not below `ON_TEMP`.
+- **Hottest sensor by default.** `TEMP_SENSOR=max` acts on the hottest of
+  the sensors jtop reports, so whichever part of the module is working
+  hardest decides.
+- **Fail safe means fan on.** On a clean stop the controller turns the fan
+  on. For an unattended, solar-powered box, unnecessary cooling costs far
+  less than silent overheating if the service does not come back.
+- **Two drivers, chosen per board.** Which chip drives `DIGITAL_OUT1`
+  depends on the board revision. `auto` probes for the I2C expander, but
+  `install.sh` saves an explicit driver, confirmed by the fan test where
+  possible, because the wrong driver fails silently (writes succeed but
+  nothing switches).
+
+### Service and installer
+
+- **Started by `jtop.service`, not `multi-user.target`.** jtop.service is
+  ordered after multi-user.target, so a unit wanted by multi-user.target
+  and ordered after jtop.service forms an ordering cycle that systemd
+  resolves by dropping it from the boot. The controller also retries its
+  jtop connection for 60 seconds, because at boot it starts before
+  jtop.service's socket is ready.
+- **Plain `venv` + `pip` in `/opt`, not Poetry.** The service must not
+  depend on developer tooling (pyenv, Poetry). Each install builds a fresh
+  virtualenv so packages from older versions do not linger.
+- **jetson-stats matched to the running service.** jtop refuses to connect
+  when the client library and service versions differ, so the installer
+  installs whatever version `jtop --version` reports rather than the pin
+  in `pyproject.toml`, and checks the result before going live.
+- **Build alongside, then swap.** Building in `/opt/jetson-fan-control.new`
+  keeps the old service controlling the fan during the slow part (pip), and
+  means a failed build (e.g. no network) never breaks a working install. A
+  moved virtualenv still works with `python -m`, which is how the unit
+  runs it.
+- **Health check counts restarts.** With `Restart=always`, a version that
+  crashes on startup looks "active" between restarts. The installer waits
+  10 seconds and also checks systemd's restart counter did not move.
+- **Remote updates need no one at the fan.** A driver saved by an earlier
+  install is trusted over detection and the fan test defaults to "no" on
+  updates, so `sudo ./install.sh` over SSH with every default is safe.
+
+### Temperature history
+
+- **SQLite.** It is in Python's standard library (no new dependency),
+  survives power loss cleanly, can be read safely while the service writes,
+  and can be queried by other tools. The default rollback journal is used
+  rather than WAL so that non-root users can open the database read-only.
+- **Summaries, not raw readings.** At one reading every 2 seconds, raw
+  storage would be about 43,000 rows a day. Like vnstat, the service keeps
+  per-minute rows for 30 days and per-hour rows forever (under 9,000 a
+  year); day and month figures are worked out from the hourly rows when
+  displayed. It writes once a minute, which keeps eMMC wear negligible.
+- **Sums, not averages.** Rows store sample count, sum, min, max and the
+  number of samples with the fan on. Sums combine exactly, so minutes add
+  into hours, hours into days, and a restart part way through a minute
+  merges into the same row.
+- **Unix timestamps, converted on display.** Storing UTC seconds avoids
+  daylight-saving ambiguity and lets any reader choose its own time zone.
+  The cost is the half-hour time zone limitation described above; finer
+  stored periods (e.g. 30 minutes) would remove it if ever needed.
+- **Recording never affects fan control.** Database errors are logged and
+  skipped, and on shutdown the fan is forced on before the last partial
+  minute is saved.
+- **History lives outside the install directory.** `/var/lib`, created by
+  the unit's `StateDirectory=`, is where systemd services keep state;
+  keeping it apart from `/opt/jetson-fan-control` means updates and
+  rollbacks cannot touch it.
+- **Format changes set data aside, never delete it.** A version number in
+  the database lets a new version recognise an old layout and rename the
+  file instead of misreading or overwriting it. Migrating old data
+  automatically was left out until there is a real format change to
+  migrate.
 
 ## Hardware background
 

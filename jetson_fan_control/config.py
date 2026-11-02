@@ -62,6 +62,13 @@ class Config:
     # --- Polling ---
     poll_interval_sec: float = _env_float("POLL_INTERVAL_SEC", 2.0)
 
+    # --- Temperature history (see history.py) ---
+    # SQLite database of per-minute and per-hour summaries; empty disables
+    # recording. The systemd unit creates /var/lib/jetson-fan-control.
+    history_db: str = _env_str("HISTORY_DB", "/var/lib/jetson-fan-control/history.db")
+    # Per-minute rows older than this are pruned; hourly rows are kept forever.
+    history_minute_days: float = _env_float("HISTORY_MINUTE_DAYS", 30)
+
     # If the controller exits cleanly (SIGTERM/SIGINT), leave the fan ON
     # rather than OFF: for an unattended, solar-powered industrial box the
     # cost of unnecessary cooling is far lower than the cost of silent

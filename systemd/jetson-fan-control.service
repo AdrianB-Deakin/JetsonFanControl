@@ -12,6 +12,8 @@ WorkingDirectory=/opt/jetson-fan-control
 ExecStart=/opt/jetson-fan-control/.venv/bin/python -m jetson_fan_control
 Restart=always
 RestartSec=5
+# Creates /var/lib/jetson-fan-control for the temperature history database.
+StateDirectory=jetson-fan-control
 
 # Settings (FAN_CONTROL_* variables, see the README) live in this file so
 # they survive reinstalls; install.sh writes it. Anything not set there

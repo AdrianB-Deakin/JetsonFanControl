@@ -17,6 +17,7 @@ from jtop import JtopException, jtop
 from .config import Config
 from .expander_fan import ExpanderFan, ExpanderFanError
 from .gpio_fan import GpioFan
+from .history import open_history
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ def run(config: Config) -> None:
     fan = setup_fan(config)
 
     decider = FanDecider(on_temp=config.on_temp, off_temp=config.off_temp)
+    history = open_history(config.history_db, config.history_minute_days)
 
     def _handle_stop(signum, _frame):
         raise _StopRequested(signal.Signals(signum).name)
@@ -143,9 +145,14 @@ def run(config: Config) -> None:
                 )
             else:
                 logger.debug("temp=%.1fC -> fan unchanged (%s)", temp_c, want_on)
+
+            if history is not None:
+                history.record(temp_c, want_on)
     except _StopRequested as exc:
         logger.info("Received %s, shutting down", exc)
     finally:
         if config.fail_safe_on_exit:
             logger.info("Fail-safe on exit: forcing fan ON")
             fan.set(True)
+        if history is not None:
+            history.close()
